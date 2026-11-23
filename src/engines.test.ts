@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ACCOUNT_BLOCK_MS, createEngines } from "./engines.js";
+import { transcribeCodexVoice } from "./ai/chatgpt-client.js";
+import { ACCOUNT_BLOCK_MS, createEngines, glossaryLine } from "./engines.js";
+
+vi.mock("./ai/chatgpt-client.js", () => ({ transcribeCodexVoice: vi.fn() }));
 
 const part = {
   bytes: new Uint8Array([1, 2, 3]),
@@ -9,6 +12,7 @@ const part = {
 };
 const options = () => ({
   hint: null,
+  terms: [] as string[],
   signal: new AbortController().signal,
   timeoutMs: 1000,
 });
@@ -32,6 +36,17 @@ describe("OpenRouter engine with stub fetch test double", () => {
     const form = request?.body as FormData;
     expect(form.get("model")).toBe("openai/gpt-transcribe");
     expect((form.get("file") as File).name).toBe("recording.webm");
+  });
+
+  it("sends every lexicon term as a keyterm", async () => {
+    const stubFetch = vi.fn<typeof fetch>(async () => Response.json({ text: "ok" }));
+    vi.stubGlobal("fetch", stubFetch);
+    await engine().transcribe(part, {
+      ...options(),
+      terms: ["Hermes", "OpenViking"],
+    });
+    const form = stubFetch.mock.calls[0][1]?.body as FormData;
+    expect(form.getAll("keyterms[]")).toEqual(["Hermes", "OpenViking"]);
   });
 
   it("includes the provider balance error and does not retry HTTP 402", async () => {
@@ -179,5 +194,38 @@ describe("OpenRouter engine with stub fetch test double", () => {
     vi.stubGlobal("fetch", async () => Response.json({ text: "ok" }));
     await openrouter.transcribe(part, options());
     expect(await openrouter.status()).toEqual({ ready: true });
+  });
+});
+
+describe("ChatGPT engine prompt", () => {
+  const chatgpt = () => createEngines(async () => undefined).chatgpt;
+
+  it("sends the glossary ahead of the composer text", async () => {
+    vi.mocked(transcribeCodexVoice).mockResolvedValueOnce("Спроси у Hermes.");
+    await expect(
+      chatgpt().transcribe(part, {
+        ...options(),
+        hint: "Предыдущий текст",
+        terms: ["Hermes", "OpenViking"],
+      }),
+    ).resolves.toBe("Спроси у Hermes.");
+    expect(vi.mocked(transcribeCodexVoice).mock.calls[0][0].hint).toBe(
+      "Glossary: Hermes, OpenViking.\n\nПредыдущий текст",
+    );
+  });
+
+  it("drops a transcript that only echoes the glossary", async () => {
+    vi.mocked(transcribeCodexVoice).mockResolvedValueOnce(
+      "Glossary: Hermes, OpenViking.",
+    );
+    await expect(
+      chatgpt().transcribe(part, { ...options(), terms: ["Hermes", "OpenViking"] }),
+    ).resolves.toBe("");
+  });
+
+  it("keeps the glossary within its length limit", () => {
+    const line = glossaryLine(Array.from({ length: 300 }, (_, i) => `Term${i}`));
+    expect(line.length).toBeLessThanOrEqual(1000 + "Glossary: .".length);
+    expect(line.endsWith(".")).toBe(true);
   });
 });

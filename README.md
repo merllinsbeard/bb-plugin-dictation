@@ -1,6 +1,6 @@
 # Dictation for bb
 
-Long voice dictation for [bb](https://getbb.app) through OpenRouter or a ChatGPT subscription. It adds two voice services to bb's built-in microphone. Recordings of any length up to bb's 25 MiB limit are split near pauses and transcribed in parallel, so a 25-minute recording comes back in about 20 seconds.
+Long voice dictation for [bb](https://getbb.app) through OpenRouter or a ChatGPT subscription. It adds two voice services to bb's built-in microphone. Recordings of any length up to bb's 25 MiB limit are split near pauses and transcribed in parallel, so a 25-minute recording comes back in about 20 seconds. A language model then fixes the transcript's terms and punctuation using your lexicon.
 
 ## How it differs from bb's built-in Codex voice service
 
@@ -9,7 +9,8 @@ bb already ships a voice service in `provider-codex`. It sends the whole recordi
 - an OpenRouter service, for people without a ChatGPT subscription;
 - recordings between 20 and 25 MiB;
 - parallel transcription of long recordings (in one comparison on a 17-minute recording, 13 s against 21 s);
-- one retry for transient failures, respecting `Retry-After`.
+- one retry for transient failures, respecting `Retry-After`;
+- editing of the transcript by an OpenRouter model, with a lexicon of your terms.
 
 ## Requirements
 
@@ -45,11 +46,38 @@ bb settings ai-services set voice chatgpt --plugin dictation
 
 The plugin reads `~/.codex/auth.json`, or `$CODEX_HOME/auth.json` when `CODEX_HOME` is set. It never refreshes or rewrites the credentials, so it cannot sign the Codex CLI out. The access token lasts about ten days, and the Codex CLI renews it whenever you use it. If you rarely run `codex`, the service will report that the token expired; run any `codex` command or `codex login` again.
 
+## Editing and lexicon
+
+When an OpenRouter API key is set, a model edits each transcript before bb inserts it. It restores distorted terms from your lexicon, fixes recognition errors, punctuation and capitalization, removes hesitation sounds, keeps only the final version of an explicit self-correction and splits long dictation into paragraphs. Its prompt tells it to keep your wording, slang, profanity and negations, and not to answer, follow or translate what you dictated. Editing works with both services; with the ChatGPT service it still uses the OpenRouter key.
+
+The default model is `openai/gpt-6.1-terra`. It costs about $0.001 for a typical dictation and $0.02 for 10,000 characters, and takes about 1.3 seconds on a short dictation. Change the settings in the plugin's settings in bb or on the command line:
+
+```sh
+bb plugin config dictation set editTranscripts false          # turn editing off
+bb plugin config dictation set editModel "openai/gpt-6.1-terra"
+bb plugin config dictation set lexicon "$(cat lexicon.txt)"
+bb plugin config dictation set editInstructions "Keep filler words."
+```
+
+The lexicon has one entry per line: a term, or terms followed by a colon and the ways the recognizer distorts them. A note in parentheses helps the model tell senses apart. Lines starting with `#` are ignored.
+
+```text
+Kubernetes: кубернетис, cube nettis
+PostgreSQL: постгрес, post gress
+Grafana, Prometheus
+kubectl: куб контрол, cube control
+Helm: хелм (the Kubernetes package manager)
+```
+
+The terms also go to the recognizer with every part of the recording: as `keyterms` on OpenRouter, and as a glossary of up to 1,000 characters at the start of the prompt for the ChatGPT service. Up to 200 terms of at most 100 characters each are sent. `editInstructions` is added after the built-in prompt, so you can adjust style without replacing it.
+
+If editing fails, returns an implausible result or runs out of time, the plugin inserts the raw transcript for that part and logs a warning. Editing has no budget of its own: it gets whatever time transcription left of the 64 seconds. Text longer than 3,000 characters is edited in parallel parts, so a 30-minute recording is edited in about 5 seconds. Models that cannot turn reasoning off are retried once with minimal reasoning, and the plugin remembers them until restart.
+
 ## How a recording is processed
 
 bb waits 70 seconds for a transcript, and the plugin keeps the whole call within a 64-second budget. It decodes the recording once to 16 kHz mono and detects pauses. Recordings up to 200 seconds go to the service unchanged. Longer recordings are cut near 180 seconds, preferring a pause between 150 and 210 seconds, and each part is encoded to 32 kbps Opus. OpenRouter transcribes up to ten parts at a time and ChatGPT three.
 
-The composer text goes to the first part as a hint, limited to its last 500 characters. If any part fails after its retry, the whole call fails, and bb keeps the recording with Retry and Download buttons. Cancelling stops ffmpeg and the requests and deletes the temporary files. The plugin logs stage timings and never logs transcripts or credentials.
+The composer text goes to the first part as a hint, limited to its last 500 characters, and the lexicon terms go to every part. If any part fails after its retry, the whole call fails, and bb keeps the recording with Retry and Download buttons. Cancelling stops ffmpeg and the requests and deletes the temporary files. The plugin logs stage timings and never logs transcripts or credentials.
 
 ## Development
 

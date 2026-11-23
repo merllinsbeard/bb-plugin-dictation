@@ -15,7 +15,12 @@ export type EngineError = {
 export type Engine = {
   transcribe(
     part: AudioPart,
-    opts: { hint: string | null; signal: AbortSignal; timeoutMs: number },
+    opts: {
+      hint: string | null;
+      terms: readonly string[];
+      signal: AbortSignal;
+      timeoutMs: number;
+    },
   ): Promise<string>;
   status(): Promise<Status>;
   concurrency: number;

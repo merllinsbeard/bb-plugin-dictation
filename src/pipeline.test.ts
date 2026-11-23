@@ -6,13 +6,18 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { runFfmpeg } from "./audio.js";
+import { createEditor } from "./edit.js";
 import { transcribe } from "./pipeline.js";
 import type { AudioPart, Engine } from "./types.js";
 let directory: string;
 let long: File;
 let short: File;
 const log = { info: vi.fn(), warn: vi.fn() };
-const opts = { signal: new AbortController().signal, hint: null };
+const opts = {
+  signal: new AbortController().signal,
+  hint: null,
+  terms: [] as string[],
+};
 function engine(fn: Engine["transcribe"]): Engine {
   return {
     transcribe: fn,
@@ -70,6 +75,65 @@ it("joins parts in source order even when completion order differs", async () =>
     [1, null],
     [2, null],
   ]);
+});
+it("sends the lexicon terms with every part, not only the first", async () => {
+  const seen: Array<readonly string[]> = [];
+  await transcribe(
+    long,
+    { ...opts, terms: ["Hermes", "OpenViking"] },
+    engine(async (part, options) => {
+      seen[part.index] = options.terms;
+      return `part-${part.index}`;
+    }),
+    log,
+  );
+  expect(seen).toEqual([
+    ["Hermes", "OpenViking"],
+    ["Hermes", "OpenViking"],
+    ["Hermes", "OpenViking"],
+  ]);
+});
+it("edits the joined transcript within the 64-second budget", async () => {
+  const before = performance.now();
+  let received: { text: string; deadline: number } | undefined;
+  const result = await transcribe(
+    long,
+    opts,
+    engine(async (part) => `part-${part.index}`),
+    log,
+    async (text, { deadline }) => {
+      received = { text, deadline };
+      return text.toUpperCase();
+    },
+  );
+  expect(result).toBe("PART-0 PART-1 PART-2");
+  expect(received?.text).toBe("part-0 part-1 part-2");
+  expect(received!.deadline - before).toBeLessThanOrEqual(64000);
+  expect(received!.deadline - before).toBeGreaterThan(60000);
+});
+it("returns the raw transcript without calling the editor model when transcription used the budget", async () => {
+  const fetchStub = vi.fn<typeof fetch>();
+  vi.stubGlobal("fetch", fetchStub);
+  const realNow = performance.now.bind(performance);
+  let skipped = 0;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => realNow() + skipped);
+  try {
+    const result = await transcribe(
+      short,
+      opts,
+      engine(async () => {
+        skipped = 62000;
+        return "сырой текст";
+      }),
+      log,
+      createEditor({ key: "k", model: "vendor/editor", lexicon: "", instructions: "" }, log),
+    );
+    expect(result).toBe("сырой текст");
+    expect(fetchStub).not.toHaveBeenCalled();
+  } finally {
+    clock.mockRestore();
+    vi.unstubAllGlobals();
+  }
 });
 it("rejects the whole call after exactly one transient retry", async () => {
   let attempts = 0;
@@ -158,7 +222,7 @@ it("kills a real ffmpeg child and deletes its temporary files after abort", asyn
   let called = false;
   const outcome = transcribe(
     long,
-    { signal: controller.signal, hint: null },
+    { signal: controller.signal, hint: null, terms: [] },
     engine(async () => {
       called = true;
       return "unexpected";

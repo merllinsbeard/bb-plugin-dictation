@@ -8,6 +8,7 @@ import {
   scanAudio,
   suppressPromptEcho,
 } from "./audio.js";
+import type { Editor } from "./edit.js";
 import type { AudioPart, Engine, EngineError, Logger } from "./types.js";
 
 function engineError(error: unknown): EngineError {
@@ -36,9 +37,10 @@ function engineError(error: unknown): EngineError {
 
 export async function transcribe(
   file: File,
-  opts: { signal: AbortSignal; hint: string | null },
+  opts: { signal: AbortSignal; hint: string | null; terms: readonly string[] },
   engine: Engine,
   log: Logger,
+  edit?: Editor,
 ): Promise<string> {
   const start = performance.now();
   const deadline = start + 64000;
@@ -90,6 +92,7 @@ export async function transcribe(
           try {
             const text = await engine.transcribe(part, {
               hint,
+              terms: opts.terms,
               signal,
               timeoutMs: Math.min(remaining / 2, 25000),
             });
@@ -126,7 +129,17 @@ export async function transcribe(
     if (failure !== undefined) throw failure;
     signal.throwIfAborted();
     timing("transcribe", sendStart);
-    return texts.filter(Boolean).join(" ");
+    const raw = texts.filter(Boolean).join(" ");
+    if (!edit || !raw) return raw;
+    const editStart = performance.now();
+    // Editing gets whatever transcription left of the budget and falls back
+    // to the raw text, so a slow model never costs the user the transcript.
+    const edited = await edit(raw, {
+      signal: opts.signal,
+      deadline: deadline - 1000,
+    });
+    timing("edit", editStart);
+    return edited;
   } finally {
     controller.abort();
     clearTimeout(timeout);

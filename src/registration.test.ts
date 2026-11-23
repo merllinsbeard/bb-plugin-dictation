@@ -1,7 +1,7 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { expect, it } from "vitest";
 import plugin from "../server.js";
-it("offers the two voice services and keeps only one secret setting", async () => {
+it("offers the two voice services and keeps the API key as the only secret setting", async () => {
   const { bb, harness } = createFakePluginHost({
     pluginId: "dictation",
     experimental_hostEntry: false,
@@ -30,12 +30,17 @@ it("offers the two voice services and keeps only one secret setting", async () =
   });
   await harness.setSettings({ openrouterApiKey: "test-key" });
   expect(await service.status!()).toEqual({ ready: true });
-  expect(harness.registrations.settingsDescriptors).toEqual({
-    openrouterApiKey: {
-      type: "string",
-      label: "OpenRouter API key",
-      secret: true,
-    },
-  });
+  expect(Object.keys(harness.registrations.settingsDescriptors)).toEqual([
+    "openrouterApiKey",
+    "editTranscripts",
+    "editModel",
+    "lexicon",
+    "editInstructions",
+  ]);
+  expect(
+    Object.entries(harness.registrations.settingsDescriptors)
+      .filter(([, descriptor]) => "secret" in descriptor && descriptor.secret)
+      .map(([key]) => key),
+  ).toEqual(["openrouterApiKey"]);
   await harness.dispose();
 });

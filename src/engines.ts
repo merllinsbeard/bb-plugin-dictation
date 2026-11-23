@@ -1,7 +1,22 @@
 import { transcribeCodexVoice } from "./ai/chatgpt-client.js";
 import { readCodexAuthCredentials } from "./ai/codex-auth.js";
 import { AiServiceFailure } from "./ai/failure.js";
+import { suppressPromptEcho } from "./audio.js";
 import type { AudioPart, Engine } from "./types.js";
+
+const GLOSSARY_CHARS = 1000;
+
+// The ChatGPT endpoint takes no keyword list, so the lexicon terms ride in the
+// prompt ahead of the composer text, which stays last as the preceding context.
+export function glossaryLine(terms: readonly string[]): string {
+  let glossary = "";
+  for (const term of terms) {
+    const next = glossary ? `${glossary}, ${term}` : term;
+    if (next.length > GLOSSARY_CHARS) break;
+    glossary = next;
+  }
+  return glossary && `Glossary: ${glossary}.`;
+}
 
 export const ACCOUNT_BLOCK_MS = 5 * 60 * 1000;
 const ACCOUNT_MESSAGES: Record<number, string> = {
@@ -50,6 +65,7 @@ export function createEngines(
           );
           body.set("model", "openai/gpt-transcribe");
           if (opts.hint !== null) body.set("prompt", opts.hint);
+          for (const term of opts.terms) body.append("keyterms[]", term);
           const response = await fetch(
             "https://openrouter.ai/api/v1/audio/transcriptions",
             {
@@ -188,18 +204,21 @@ export function createEngines(
         }
       },
       async transcribe(part: AudioPart, opts) {
+        const glossary = glossaryLine(opts.terms);
+        const prompt = [glossary, opts.hint].filter(Boolean).join("\n\n") || null;
         try {
-          return await transcribeCodexVoice(
+          const text = await transcribeCodexVoice(
             {
               model: "gpt-transcribe",
               audioBase64: Buffer.from(part.bytes).toString("base64"),
               filename: part.filename,
               mimeType: part.mimeType,
-              hint: opts.hint,
+              hint: prompt,
               timeoutMs: opts.timeoutMs,
             },
             opts.signal,
           );
+          return suppressPromptEcho(suppressPromptEcho(text, prompt), glossary);
         } catch (error) {
           if (error instanceof TypeError)
             throw new AiServiceFailure(
