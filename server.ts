@@ -1,7 +1,17 @@
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import {
+  cliCommand,
+  defineCli,
+  PluginCliError,
+  type BbPluginApi,
+} from "@get-bb/plugin-sdk";
 import { FFMPEG_MISSING, findFfmpeg } from "./src/audio.js";
 import { createEditor, DEFAULT_EDIT_MODEL } from "./src/edit.js";
 import { createEngines } from "./src/engines.js";
+import {
+  createDictationHistory,
+  HISTORY_MIGRATIONS,
+  type DictationRecord,
+} from "./src/history.js";
 import { lexiconTerms } from "./src/lexicon.js";
 import { transcribe } from "./src/pipeline.js";
 
@@ -9,6 +19,22 @@ const DISPLAY_NAMES = {
   openrouter: "OpenRouter dictation",
   chatgpt: "ChatGPT subscription dictation",
 };
+
+function formatPreview(text: string, maxChars = 120): string {
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  if (singleLine.length <= maxChars) return singleLine;
+  return `${singleLine.slice(0, maxChars - 1)}…`;
+}
+
+function formatRecordLine(record: DictationRecord): string {
+  const duration =
+    record.durationSec !== null ? `${Math.round(record.durationSec)}s` : "-";
+  const body =
+    record.status === "failed"
+      ? `[FAILED] ${record.errorMessage ?? "unknown error"}`
+      : formatPreview(record.editedText || record.rawText);
+  return `#${record.id} ${record.createdAt} [${record.serviceId} ${duration}] ${body}`;
+}
 
 export default function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
@@ -46,7 +72,21 @@ export default function plugin(bb: BbPluginApi) {
       experimental_multiline: true,
       default: "",
     },
+    saveHistory: {
+      type: "boolean",
+      label: "Save dictation history to SQLite",
+      description:
+        "Persist every raw and edited transcript locally in the plugin's SQLite database (data.db). Inspect with `bb dictation list`, `bb dictation search`, or `bb dictation show`.",
+      default: true,
+    },
   });
+
+  const history = createDictationHistory(() => {
+    const db = bb.storage.database();
+    bb.storage.migrate(db, [...HISTORY_MIGRATIONS]);
+    return db;
+  });
+
   const ENGINES = createEngines(
     async () => (await settings.get()).openrouterApiKey,
   );
@@ -60,6 +100,7 @@ export default function plugin(bb: BbPluginApi) {
           ? engine.status()
           : { ready: false, message: FFMPEG_MISSING },
       transcribe: async (file, opts) => {
+        const startedAt = performance.now();
         const current = await settings.get();
         const key = current.openrouterApiKey?.trim();
         const model = current.editModel.trim() || DEFAULT_EDIT_MODEL;
@@ -75,14 +116,214 @@ export default function plugin(bb: BbPluginApi) {
                 bb.log,
               )
             : undefined;
-        return transcribe(
-          file,
-          { ...opts, terms: lexiconTerms(current.lexicon) },
-          engine,
-          bb.log,
-          edit,
-        );
+        let savedId: number | undefined;
+        const hooks = current.saveHistory
+          ? {
+              onTranscribed(info: {
+                rawText: string;
+                durationSec: number;
+                parts: number;
+                elapsedMs: number;
+              }) {
+                savedId = history.recordTranscribed({
+                  serviceId: id,
+                  durationSec: info.durationSec,
+                  elapsedMs: info.elapsedMs,
+                  audioBytes: file.size,
+                  mimeType: file.type || "application/octet-stream",
+                  parts: info.parts,
+                  rawText: info.rawText,
+                });
+              },
+              onEdited(info: { editedText: string; elapsedMs: number }) {
+                if (savedId === undefined) return;
+                history.updateEdited({
+                  id: savedId,
+                  editedText: info.editedText,
+                  editModel: model,
+                  elapsedMs: info.elapsedMs,
+                });
+              },
+            }
+          : undefined;
+        try {
+          return await transcribe(
+            file,
+            { ...opts, terms: lexiconTerms(current.lexicon) },
+            engine,
+            bb.log,
+            edit,
+            hooks,
+          );
+        } catch (error) {
+          if (current.saveHistory && savedId === undefined && !opts.signal.aborted) {
+            try {
+              history.recordFailure({
+                serviceId: id,
+                elapsedMs: performance.now() - startedAt,
+                audioBytes: file.size,
+                mimeType: file.type || "application/octet-stream",
+                errorMessage:
+                  error instanceof Error ? error.message : String(error),
+              });
+            } catch (storageError) {
+              bb.log.warn(
+                `History failure write failed: ${storageError instanceof Error ? storageError.message : String(storageError)}`,
+              );
+            }
+          }
+          throw error;
+        }
       },
     });
   }
+
+  bb.cli.register(
+    defineCli({
+      name: "dictation",
+      summary: "Inspect and search saved voice dictation transcripts",
+      commands: {
+        list: cliCommand({
+          summary: "List recent saved dictations (newest first)",
+          options: {
+            limit: {
+              type: "integer",
+              min: 1,
+              max: 200,
+              default: 20,
+              description: "Maximum rows to return (1-200)",
+            },
+            since: {
+              type: "string",
+              description: "Filter by ISO timestamp or YYYY-MM-DD prefix",
+            },
+            service: {
+              type: "enum",
+              values: ["openrouter", "chatgpt"],
+              description: "Filter by transcription service",
+            },
+            failed: {
+              type: "boolean",
+              description: "Include failed dictation attempts",
+            },
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          async run(input) {
+            const rows = history.list({
+              limit: input.options.limit,
+              since: input.options.since,
+              serviceId: input.options.service,
+              includeFailed: input.options.failed,
+            });
+            if (input.options.json) {
+              return { exitCode: 0, stdout: JSON.stringify(rows, null, 2) };
+            }
+            if (rows.length === 0) {
+              return { exitCode: 0, stdout: "No saved dictations." };
+            }
+            return {
+              exitCode: 0,
+              stdout: rows.map(formatRecordLine).join("\n"),
+            };
+          },
+        }),
+        show: cliCommand({
+          summary: "Print the full transcript for a saved dictation ID",
+          positionals: [
+            { name: "id", description: "Numeric dictation ID", required: true },
+          ],
+          options: {
+            raw: {
+              type: "boolean",
+              description: "Show raw pre-edit STT transcript",
+            },
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          async run(input) {
+            const id = Number.parseInt(input.positionals.id, 10);
+            if (!Number.isFinite(id) || id <= 0) {
+              throw new PluginCliError(`Invalid dictation id: ${input.positionals.id}`, {
+                code: "invalid_id",
+                hint: "Run `bb dictation list` to see available numeric IDs.",
+              });
+            }
+            const record = history.get(id);
+            if (!record) {
+              throw new PluginCliError(`Dictation #${id} not found`, {
+                code: "not_found",
+                hint: "Run `bb dictation list` to see saved dictations.",
+              });
+            }
+            if (input.options.json) {
+              return { exitCode: 0, stdout: JSON.stringify(record, null, 2) };
+            }
+            const text = input.options.raw
+              ? record.rawText
+              : record.editedText || record.rawText;
+            return { exitCode: 0, stdout: text };
+          },
+        }),
+        search: cliCommand({
+          summary: "Search saved dictations (case-insensitive, Unicode-aware)",
+          positionals: [
+            { name: "query", description: "Substring to search for", required: true },
+          ],
+          options: {
+            limit: {
+              type: "integer",
+              min: 1,
+              max: 200,
+              default: 20,
+              description: "Maximum matches to return (1-200)",
+            },
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          async run(input) {
+            const rows = history.search(input.positionals.query, {
+              limit: input.options.limit,
+            });
+            if (input.options.json) {
+              return { exitCode: 0, stdout: JSON.stringify(rows, null, 2) };
+            }
+            if (rows.length === 0) {
+              return { exitCode: 0, stdout: "No matching dictations." };
+            }
+            return {
+              exitCode: 0,
+              stdout: rows.map(formatRecordLine).join("\n"),
+            };
+          },
+        }),
+        stats: cliCommand({
+          summary: "Show summary statistics for saved dictations",
+          options: {
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          async run(input) {
+            const stats = history.stats();
+            if (input.options.json) {
+              return { exitCode: 0, stdout: JSON.stringify(stats, null, 2) };
+            }
+            const mins = (stats.totalDurationSec / 60).toFixed(1);
+            return {
+              exitCode: 0,
+              stdout: `Dictations: ${stats.ok} ok, ${stats.failed} failed (${stats.total} total) · ${mins} min audio · ${stats.totalChars} chars`,
+            };
+          },
+        }),
+      },
+    }),
+  );
 }

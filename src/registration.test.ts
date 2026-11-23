@@ -36,7 +36,9 @@ it("offers the two voice services and keeps the API key as the only secret setti
     "editModel",
     "lexicon",
     "editInstructions",
+    "saveHistory",
   ]);
+  expect(harness.registrations.cli?.name).toBe("dictation");
   expect(
     Object.entries(harness.registrations.settingsDescriptors)
       .filter(([, descriptor]) => "secret" in descriptor && descriptor.secret)
