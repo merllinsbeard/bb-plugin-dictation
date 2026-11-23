@@ -1,0 +1,37 @@
+{
+  "name": "bb-plugin-dictation",
+  "version": "0.1.0",
+  "description": "Long voice dictation for bb through OpenRouter or a ChatGPT subscription.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/merllinsbeard/bb-plugin-dictation.git"
+  },
+  "engines": {
+    "bb": ">=0.46",
+    "bbPluginSdk": ">=0.6.54"
+  },
+  "bb": {
+    "name": "Dictation",
+    "description": "Long voice dictation through OpenRouter or a ChatGPT subscription.",
+    "branding": {
+      "icon": "Mic"
+    },
+    "server": "./server.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "bb plugin build"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.179",
+    "@types/node": "^22.0.0",
+    "better-sqlite3": "^12.11.1",
+    "cron-parser": "^5.10.2",
+    "hono": "^4.13.13",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.12"
+  }
+}

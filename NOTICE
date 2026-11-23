@@ -1,0 +1,6 @@
+Derived code and tests in src/codex-home.ts and src/ai/ come from get-bb/bb provider-codex, origin/main 9937c46f5c7e369de3563eb864c8cbc4c3b9c231.
+Copyright (c) Michael Yong. MIT license.
+Local adaptation: parseJsonValue uses JSON.parse without the upstream SDK JSON schema.
+
+planAudioRanges and suppressPromptEcho in src/audio.ts come from merllinsbeard/bb-plugin-voice-input, revision 1a62a6c648a8106b04ee8a38d694e764fc506447, src/long-audio.ts.
+Copyright (c) Kirill Vechkasov. MIT license.

@@ -1,0 +1,184 @@
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { promisify } from "node:util";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { runFfmpeg } from "./audio.js";
+import { transcribe } from "./pipeline.js";
+import type { AudioPart, Engine } from "./types.js";
+let directory: string;
+let long: File;
+let short: File;
+const log = { info: vi.fn(), warn: vi.fn() };
+const opts = { signal: new AbortController().signal, hint: null };
+function engine(fn: Engine["transcribe"]): Engine {
+  return {
+    transcribe: fn,
+    concurrency: 3,
+    status: async () => ({ ready: true }),
+  };
+}
+beforeAll(async () => {
+  directory = await mkdtemp(join(tmpdir(), "dictation-pipeline-test-"));
+  const source = join(directory, "source.wav");
+  await runFfmpeg(
+    [
+      "-v",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "sine=frequency=440:sample_rate=16000:duration=550",
+      "-c:a",
+      "pcm_s16le",
+      source,
+    ],
+    opts.signal,
+  );
+  long = new File([await readFile(source)], "recording.wav", {
+    type: "audio/wav",
+  });
+  const shortSource = join(directory, "short.mp4");
+  await runFfmpeg(
+    ["-v", "error", "-i", source, "-t", "1", "-c:a", "aac", shortSource],
+    opts.signal,
+  );
+  short = new File([await readFile(shortSource)], "original.mp4", {
+    type: "audio/mp4",
+  });
+});
+afterAll(async () => {
+  await rm(directory, { recursive: true, force: true });
+});
+it("joins parts in source order even when completion order differs", async () => {
+  const seen: Array<[number, string | null]> = [];
+  const result = await transcribe(
+    long,
+    { ...opts, hint: "x".repeat(510) },
+    engine(async (part, options) => {
+      seen.push([part.index, options.hint]);
+      await delay((3 - part.index) * 10);
+      return `part-${part.index}`;
+    }),
+    log,
+  );
+  expect(result).toBe("part-0 part-1 part-2");
+  expect(seen).toEqual([
+    [0, "x".repeat(500)],
+    [1, null],
+    [2, null],
+  ]);
+});
+it("rejects the whole call after exactly one transient retry", async () => {
+  let attempts = 0;
+  await expect(
+    transcribe(
+      short,
+      opts,
+      engine(async () => {
+        attempts++;
+        throw Object.assign(new Error("transient"), {
+          retryable: true,
+          retryAfterMs: 1,
+        });
+      }),
+      log,
+    ),
+  ).rejects.toThrow("transient");
+  expect(attempts).toBe(2);
+});
+it("accepts empty parts and preserves the rest", async () => {
+  expect(
+    await transcribe(
+      long,
+      opts,
+      engine(async (part) => (part.index === 1 ? "" : `part-${part.index}`)),
+      log,
+    ),
+  ).toBe("part-0 part-2");
+});
+it("passes original mp4 bytes, filename and MIME for short recordings and suppresses hint echo", async () => {
+  let received: AudioPart | undefined;
+  const result = await transcribe(
+    short,
+    { ...opts, hint: "Hello, world." },
+    engine(async (part) => {
+      received = part;
+      return "hello world";
+    }),
+    log,
+  );
+  expect(result).toBe("");
+  expect(received?.filename).toBe("original.mp4");
+  expect(received?.mimeType).toBe("audio/mp4");
+  expect(Buffer.from(received!.bytes)).toEqual(
+    Buffer.from(await short.arrayBuffer()),
+  );
+});
+it("cancels other fetches immediately after a permanent failure", async () => {
+  let canceled = false;
+  await expect(
+    transcribe(
+      long,
+      opts,
+      engine(async (part, options) => {
+        if (part.index === 0) {
+          await delay(10);
+          throw Object.assign(new Error("auth failed"), { retryable: false });
+        }
+        return new Promise<string>((_resolve, reject) =>
+          options.signal.addEventListener(
+            "abort",
+            () => {
+              canceled = true;
+              reject(options.signal.reason);
+            },
+            { once: true },
+          ),
+        );
+      }),
+      log,
+    ),
+  ).rejects.toThrow("auth failed");
+  expect(canceled).toBe(true);
+});
+async function matchingChildren(root: string): Promise<number[]> {
+  const { stdout } = await promisify(execFile)("ps", ["-A", "-o", "pid=,command="]);
+  return stdout
+    .split("\n")
+    .filter((line) => line.includes("ffmpeg") && line.includes(root))
+    .map((line) => Number(line.trim().split(/\s+/)[0]));
+}
+it("kills a real ffmpeg child and deletes its temporary files after abort", async () => {
+  const root = await mkdtemp(join(directory, "abort-"));
+  vi.stubEnv("TMPDIR", root);
+  const controller = new AbortController();
+  let called = false;
+  const outcome = transcribe(
+    long,
+    { signal: controller.signal, hint: null },
+    engine(async () => {
+      called = true;
+      return "unexpected";
+    }),
+    log,
+  ).then(
+    () => null,
+    (error) => error,
+  );
+  let children: number[] = [];
+  for (let i = 0; i < 100 && children.length === 0; i++) {
+    children = await matchingChildren(root);
+    if (!children.length) await delay(2);
+  }
+  controller.abort(new Error("owner canceled"));
+  const error = await outcome;
+  vi.unstubAllEnvs();
+  expect(children.length).toBeGreaterThan(0);
+  expect(error.message).toBe("owner canceled");
+  expect(called).toBe(false);
+  expect(await matchingChildren(root)).toEqual([]);
+  expect(await readdir(root)).toEqual([]);
+});
