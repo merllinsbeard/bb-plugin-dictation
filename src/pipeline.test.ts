@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { runFfmpeg } from "./audio.js";
 import { createEditor } from "./edit.js";
-import { transcribe } from "./pipeline.js";
+import { attemptTimeoutMs, transcribe } from "./pipeline.js";
 import type { AudioPart, Engine } from "./types.js";
 let directory: string;
 let long: File;
@@ -135,8 +135,9 @@ it("returns the raw transcript without calling the editor model when transcripti
     vi.unstubAllGlobals();
   }
 });
-it("rejects the whole call after exactly one transient retry", async () => {
+it("retries transient failures up to three times before rejecting", async () => {
   let attempts = 0;
+  log.warn.mockClear();
   await expect(
     transcribe(
       short,
@@ -151,7 +152,34 @@ it("rejects the whole call after exactly one transient retry", async () => {
       log,
     ),
   ).rejects.toThrow("transient");
-  expect(attempts).toBe(2);
+  expect(attempts).toBe(4);
+  expect(log.warn).toHaveBeenCalledTimes(4);
+});
+it("recovers when a later transient retry succeeds", async () => {
+  let attempts = 0;
+  const result = await transcribe(
+    short,
+    opts,
+    engine(async () => {
+      attempts++;
+      if (attempts < 3) {
+        throw Object.assign(new Error("upstream 503"), {
+          retryable: true,
+          retryAfterMs: 1,
+        });
+      }
+      return "recovered";
+    }),
+    log,
+  );
+  expect(attempts).toBe(3);
+  expect(result).toBe("recovered");
+});
+it("gives earlier attempts room to retry and gives the final attempt the remaining budget", () => {
+  expect(attemptTimeoutMs(60000, 0, 4)).toBe(25000);
+  expect(attemptTimeoutMs(20000, 1, 4)).toBe(12000);
+  expect(attemptTimeoutMs(20000, 3, 4)).toBe(19500);
+  expect(attemptTimeoutMs(40000, 3, 4)).toBe(30000);
 });
 it("accepts empty parts and preserves the rest", async () => {
   expect(

@@ -1,6 +1,6 @@
 # Dictation
 
-This is a server-only bb plugin. Check the `@get-bb/plugin-sdk` types before using an API, and refresh the pin with `bb plugin types` when bb ships a newer SDK.
+This bb plugin provides server-side voice services (`server.ts`) and a lightweight frontend content script (`app.ts`) that auto-retries transient failed recordings in the composer. Check the `@get-bb/plugin-sdk` types before using an API, and refresh the pin with `bb plugin types` when bb ships a newer SDK.
 
 Both services share one Engine table and one transcription pipeline. OpenRouter runs ten parts at a time and ChatGPT three, because more parallel ChatGPT requests trigger Cloudflare challenges. The whole call stays inside a 64-second budget so bb, which waits 70 seconds, still gets a clear error. Keep cancellation and temporary-file cleanup intact when you change the pipeline.
 

@@ -35,6 +35,25 @@ function engineError(error: unknown): EngineError {
   };
 }
 
+const BUDGET_MS = 64000;
+const RETRY_DELAYS_MS = [500, 1500, 3000] as const;
+const MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1;
+const MIN_ATTEMPT_TIMEOUT_MS = 1000;
+const MAX_ATTEMPT_TIMEOUT_MS = 25000;
+const FINAL_ATTEMPT_TIMEOUT_MS = 30000;
+const BUDGET_RESERVE_MS = 500;
+
+export function attemptTimeoutMs(
+  remainingMs: number,
+  attempt: number,
+  maxAttempts = MAX_ATTEMPTS,
+): number {
+  const isFinal = attempt >= maxAttempts - 1 || remainingMs <= 15000;
+  const raw = isFinal ? remainingMs - BUDGET_RESERVE_MS : remainingMs * 0.6;
+  const cap = isFinal ? FINAL_ATTEMPT_TIMEOUT_MS : MAX_ATTEMPT_TIMEOUT_MS;
+  return Math.min(Math.max(MIN_ATTEMPT_TIMEOUT_MS, raw), cap);
+}
+
 export async function transcribe(
   file: File,
   opts: { signal: AbortSignal; hint: string | null; terms: readonly string[] },
@@ -43,14 +62,14 @@ export async function transcribe(
   edit?: Editor,
 ): Promise<string> {
   const start = performance.now();
-  const deadline = start + 64000;
+  const deadline = start + BUDGET_MS;
   const controller = new AbortController();
   const cancel = () => controller.abort(opts.signal.reason);
   opts.signal.throwIfAborted();
   opts.signal.addEventListener("abort", cancel, { once: true });
   const timeout = setTimeout(
     () => controller.abort(new Error("Dictation exceeded 64-second budget")),
-    64000,
+    BUDGET_MS,
   );
   const signal = controller.signal;
   let directory: string | undefined;
@@ -84,7 +103,7 @@ export async function transcribe(
       while (next < parts.length && !signal.aborted) {
         const part = parts[next++];
         const hint = part.index === 0 ? opts.hint?.slice(-500) || null : null;
-        for (let attempt = 0; attempt < 2; attempt++) {
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
           signal.throwIfAborted();
           const remaining = deadline - performance.now();
           if (remaining <= 0)
@@ -94,7 +113,7 @@ export async function transcribe(
               hint,
               terms: opts.terms,
               signal,
-              timeoutMs: Math.min(remaining / 2, 25000),
+              timeoutMs: attemptTimeoutMs(remaining, attempt, MAX_ATTEMPTS),
             });
             if (text.length > 6000)
               log.warn(
@@ -103,11 +122,24 @@ export async function transcribe(
             texts[part.index] = suppressPromptEcho(text, hint).trim();
             break;
           } catch (error) {
+            if (signal.aborted) throw error;
             const classified = engineError(error);
-            if (signal.aborted || !classified.retryable || attempt === 1)
+            if (!classified.retryable || attempt === MAX_ATTEMPTS - 1) {
+              log.warn(
+                `Part ${part.index} failed after ${attempt + 1} attempt(s): ${classified.message}`,
+              );
               throw error;
-            const wait = classified.retryAfterMs ?? 250;
-            if (wait >= deadline - performance.now()) throw error;
+            }
+            const wait = classified.retryAfterMs ?? RETRY_DELAYS_MS[attempt];
+            if (wait + MIN_ATTEMPT_TIMEOUT_MS >= deadline - performance.now()) {
+              log.warn(
+                `Part ${part.index} failed (${classified.message}); not enough budget left to retry`,
+              );
+              throw error;
+            }
+            log.warn(
+              `Part ${part.index} attempt ${attempt + 1} failed (${classified.message}); retrying in ${Math.round(wait)}ms`,
+            );
             await delay(wait, undefined, { signal });
           }
         }

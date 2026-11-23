@@ -17,6 +17,7 @@
   },
   "include": [
     "server.ts",
+    "app.ts",
     "src",
     "vitest.config.ts"
   ]

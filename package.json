@@ -18,7 +18,8 @@
     "branding": {
       "icon": "Mic"
     },
-    "server": "./server.ts"
+    "server": "./server.ts",
+    "app": "./app.ts"
   },
   "scripts": {
     "test": "vitest run",
