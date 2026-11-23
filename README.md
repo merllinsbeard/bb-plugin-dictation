@@ -9,7 +9,7 @@ bb already ships a voice service in `provider-codex`. It sends the whole recordi
 - an OpenRouter service, for people without a ChatGPT subscription;
 - recordings between 20 and 25 MiB;
 - parallel transcription of long recordings (in one comparison on a 17-minute recording, 13 s against 21 s);
-- one retry for transient failures, respecting `Retry-After`;
+- automatic retries for transient failures: up to three server-side retries with backoff (respecting `Retry-After`) plus client-side auto-retry when a mobile connection drops or the app returns from background;
 - editing of the transcript by an OpenRouter model, with a lexicon of your terms.
 
 ## Requirements
