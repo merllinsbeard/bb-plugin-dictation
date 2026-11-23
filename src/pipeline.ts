@@ -54,12 +54,23 @@ export function attemptTimeoutMs(
   return Math.min(Math.max(MIN_ATTEMPT_TIMEOUT_MS, raw), cap);
 }
 
+export interface TranscribeHooks {
+  onTranscribed?: (info: {
+    rawText: string;
+    durationSec: number;
+    parts: number;
+    elapsedMs: number;
+  }) => void;
+  onEdited?: (info: { editedText: string; elapsedMs: number }) => void;
+}
+
 export async function transcribe(
   file: File,
   opts: { signal: AbortSignal; hint: string | null; terms: readonly string[] },
   engine: Engine,
   log: Logger,
   edit?: Editor,
+  hooks?: TranscribeHooks,
 ): Promise<string> {
   const start = performance.now();
   const deadline = start + BUDGET_MS;
@@ -162,6 +173,20 @@ export async function transcribe(
     signal.throwIfAborted();
     timing("transcribe", sendStart);
     const raw = texts.filter(Boolean).join(" ");
+    if (raw && hooks?.onTranscribed) {
+      try {
+        hooks.onTranscribed({
+          rawText: raw,
+          durationSec: scan.duration,
+          parts: parts.length,
+          elapsedMs: performance.now() - start,
+        });
+      } catch (error) {
+        log.warn(
+          `History write after transcription failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     if (!edit || !raw) return raw;
     const editStart = performance.now();
     // Editing gets whatever transcription left of the budget and falls back
@@ -171,6 +196,18 @@ export async function transcribe(
       deadline: deadline - 1000,
     });
     timing("edit", editStart);
+    if (hooks?.onEdited) {
+      try {
+        hooks.onEdited({
+          editedText: edited,
+          elapsedMs: performance.now() - start,
+        });
+      } catch (error) {
+        log.warn(
+          `History update after editing failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     return edited;
   } finally {
     controller.abort();

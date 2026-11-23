@@ -10,6 +10,7 @@ bb already ships a voice service in `provider-codex`. It sends the whole recordi
 - recordings between 20 and 25 MiB;
 - parallel transcription of long recordings (in one comparison on a 17-minute recording, 13 s against 21 s);
 - automatic retries for transient failures: up to three server-side retries with backoff (respecting `Retry-After`) plus client-side auto-retry when a mobile connection drops or the app returns from background;
+- local SQLite history (`~/.bb/plugins/dictation/data.db`) saving both raw and edited transcripts, queryable via `bb dictation list|show|search|stats`;
 - editing of the transcript by an OpenRouter model, with a lexicon of your terms.
 
 ## Requirements
