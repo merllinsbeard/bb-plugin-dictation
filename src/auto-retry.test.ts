@@ -64,6 +64,24 @@ describe("isRetryableVoiceError", () => {
     expect(isRetryableVoiceError("Voice input failed · Microphone permission denied")).toBe(false);
     expect(isRetryableVoiceError("Voice input failed · Turned off in Settings")).toBe(false);
   });
+
+  it("does not retry a recording that ffmpeg or the provider cannot decode", () => {
+    // Banner text for the 968 KB webm that failed on 2026-11-24 (data.db rows 10-19).
+    expect(
+      isRetryableVoiceError(
+        "Voice input failed · OpenRouter: ffmpeg failed (1): /tmp/dictation-MqRoNW/recording: Invalid data found when processing input",
+      ),
+    ).toBe(false);
+    expect(
+      isRetryableVoiceError(
+        "Voice input failed · OpenRouter: OpenRouter transcription failed with HTTP 400: Audio file might be corrupted or unsupported",
+      ),
+    ).toBe(false);
+  });
+
+  it("still retries ffmpeg when it was killed rather than rejecting the file", () => {
+    expect(isRetryableVoiceError("Voice input failed · OpenRouter: ffmpeg failed (null): ")).toBe(true);
+  });
 });
 
 describe("createAutoRetryController", () => {
