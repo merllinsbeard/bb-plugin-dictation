@@ -5,7 +5,10 @@ export const DEFAULT_RETRY_DELAYS_MS = [1500, 4000, 10000] as const;
 export const DEFAULT_RESUME_DELAY_MS = 500;
 
 const PERMANENT_ERROR_PATTERNS = [
-  /\bHTTP 40[12]\b/i,
+  /\bHTTP 40[012]\b/i,
+  // ffmpeg exits with a numeric code when it cannot read the file; a kill shows "(null)".
+  /\bffmpeg failed \(\d+\)/i,
+  /\binvalid data found\b/i,
   /\b(?:api key|balance is too low|not configured|turned off|not loaded|auth_required)\b/i,
   /\b(?:too large|exceeds \d+\s*mb|must not be empty|empty result|too short|no audio)\b/i,
   /\b(?:microphone|permission denied|not supported|insecure|not found|already in use)\b/i,
