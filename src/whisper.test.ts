@@ -65,15 +65,15 @@ describe("local Whisper engine", () => {
     });
   });
 
-  it("kills the worker and its children on timeout", async () => {
-    await fakeUv(`sleep 30 & echo $! > "${directory}/child"; wait`);
-    const started = performance.now();
-    await expect(createWhisperEngine(async () => "").transcribe(part, options(500))).rejects.toMatchObject({
-      message: "Local Whisper transcription timed out.",
-      retryable: true,
-    });
-    expect(performance.now() - started).toBeLessThan(3000);
+  it("ignores the per-attempt timeout and kills the worker and its children on cancellation", async () => {
+    await fakeUv(`echo $$ > "${directory}/worker"; sleep 30 & echo $! > "${directory}/child"; wait`);
+    const controller = new AbortController();
+    const outcome = createWhisperEngine(async () => "").transcribe(part, options(100, controller.signal));
+    await new Promise((resolve) => setTimeout(resolve, 600));
     const child = Number(await readFile(join(directory, "child"), "utf8"));
+    expect(() => process.kill(child, 0)).not.toThrow();
+    controller.abort(new Error("budget spent"));
+    await expect(outcome).rejects.toThrow("budget spent");
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(() => process.kill(child, 0)).toThrow();
   });

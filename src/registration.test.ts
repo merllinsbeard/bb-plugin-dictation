@@ -1,7 +1,7 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { expect, it, vi } from "vitest";
 import plugin from "../server.js";
-it("offers three voice services and keeps the API key as the only secret setting", async () => {
+it("offers four voice services and keeps the API key as the only secret setting", async () => {
   vi.stubGlobal("fetch", async () => Response.json({ data: { limit_remaining: null } }));
   const { bb, harness } = createFakePluginHost({
     pluginId: "dictation",
@@ -26,6 +26,11 @@ it("offers three voice services and keeps the API key as the only secret setting
     {
       id: "whisper",
       displayName: "Local Whisper dictation",
+      complete: undefined,
+    },
+    {
+      id: "x-gemini",
+      displayName: "Gemini dictation (Antigravity CLI)",
       complete: undefined,
     },
   ]);

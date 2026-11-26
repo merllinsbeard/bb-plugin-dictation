@@ -59,6 +59,7 @@ describe("editing with a stub OpenRouter", () => {
     ).toBe("Спроси у Hermes.");
     const sent = body(fetchStub.mock.calls[0]);
     expect(sent.model).toBe("vendor/editor");
+    expect(sent.max_tokens).toBe(Math.ceil("спроси у гермеса".length * 1.6) + 1024);
     expect(sent.messages[0].content).toContain("Lexicon:\nHermes: гермес");
     expect(sent.messages[0].content).toContain("Keep «короче».");
     expect(sent.messages[1].content).toBe(
