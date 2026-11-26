@@ -24,16 +24,21 @@ it("offers four voice services and keeps the API key as the only secret setting"
       complete: undefined,
     },
     {
+      id: "v-gemini",
+      displayName: "Gemini dictation (Antigravity CLI)",
+      complete: undefined,
+    },
+    {
       id: "whisper",
       displayName: "Local Whisper dictation",
       complete: undefined,
     },
-    {
-      id: "x-gemini",
-      displayName: "Gemini dictation (Antigravity CLI)",
-      complete: undefined,
-    },
   ]);
+  // bb's Automatic tries one plugin's services in plain string order of id.
+  const automaticOrder = harness.registrations.aiServiceRegistrations
+    .map(({ id }) => id)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  expect(automaticOrder).toEqual(["chatgpt", "openrouter", "v-gemini", "whisper"]);
   const service = harness.registrations.aiServiceRegistrations[0];
   expect(await service.status!()).toEqual({
     ready: false,

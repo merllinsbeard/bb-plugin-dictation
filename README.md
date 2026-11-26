@@ -53,15 +53,15 @@ Each part loads the model afresh (about 2 seconds) and parts run one after anoth
 
 ### Gemini through the Antigravity CLI
 
-The `x-gemini` service sends each part to Gemini through the [Antigravity](https://antigravity.google) CLI, `agy-pool` when it is installed and `agy` otherwise, under your own sign-in. The prompt treats the recording as data and passes the lexicon terms as a glossary. Starting the CLI takes about 25 seconds whatever the length, so parts run four at a time: a one-minute dictation takes about 22 seconds and a five-minute one about 63, close to bb's limit. Choose it explicitly for quality without OpenRouter credit:
+The `v-gemini` service sends each part to Gemini through the [Antigravity](https://antigravity.google) CLI, `agy-pool` when it is installed and `agy` otherwise, under your own sign-in. The prompt treats the recording as data and passes the lexicon terms as a glossary. Starting the CLI takes about 25 seconds whatever the length, so parts run four at a time: a one-minute dictation takes about 22 seconds and a five-minute one about 63, close to bb's limit. Choose it explicitly for quality without OpenRouter credit:
 
 ```sh
-bb settings ai-services set voice x-gemini --plugin dictation
+bb settings ai-services set voice v-gemini --plugin dictation
 ```
 
 ### Automatic selection
 
-bb's Automatic setting tries ready services in order of plugin id and then service id, and moves to the next one when a service fails. Within this plugin the order is `chatgpt`, `openrouter`, `whisper`, `x-gemini`: local Whisper takes over when OpenRouter fails, and the slower Gemini service runs only if Whisper fails too, for example on a recording too long for it:
+bb's Automatic setting tries ready services in order of plugin id and then service id, and moves to the next one when a service fails. Within this plugin the order is `chatgpt`, `openrouter`, `v-gemini`, `whisper`: Gemini takes over when OpenRouter fails, and local Whisper runs only if Gemini fails too, with its own 70-second wait. Gemini is slower than Whisper on short recordings (about 22 seconds against 8 for a minute) and transcribes better:
 
 ```sh
 bb settings ai-services set voice automatic
