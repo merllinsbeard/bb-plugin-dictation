@@ -1,6 +1,6 @@
 # Dictation for bb
 
-Long voice dictation for [bb](https://getbb.app) through OpenRouter, a ChatGPT subscription or a local Whisper model. It adds three voice services to bb's built-in microphone. Recordings of any length up to bb's 25 MiB limit are split near pauses and transcribed in parallel, so a 25-minute recording comes back in about 20 seconds. A language model then fixes the transcript's terms and punctuation using your lexicon.
+Long voice dictation for [bb](https://getbb.app) through OpenRouter, a ChatGPT subscription, a local Whisper model or Gemini through the Antigravity CLI. It adds four voice services to bb's built-in microphone. Recordings of any length up to bb's 25 MiB limit are split near pauses and transcribed in parallel, so a 25-minute recording comes back in about 20 seconds. A language model then fixes the transcript's terms and punctuation using your lexicon.
 
 ## How it differs from bb's built-in Codex voice service
 
@@ -49,11 +49,19 @@ uv run --no-project --with faster-whisper==1.2.1 python -c "from faster_whisper 
 bb plugin config dictation set whisperLanguage ru   # optional; empty detects the language per recording
 ```
 
-Each part loads the model afresh (about 2 seconds) and parts run one after another, so the service holds no memory between dictations. On an idle 16-vCPU server it transcribes about ten times faster than real time: a one-minute dictation comes back in about 8 seconds with editing. Recordings up to about RECORDING_LIMIT fit in bb's 70-second wait; a longer one fails and bb keeps it with Retry and Download buttons, so pick another service for long dictation. The recognizer gets neither the lexicon nor the composer text, because on the author's recordings both made it worse (hotwords raised the word error rate from 16% to 38%); the editor restores your terms.
+Each part loads the model afresh (about 2 seconds) and parts run one after another, so the service holds no memory between dictations. Whisper runs without conditioning on its earlier text, which keeps it out of repetition loops on long monologues. On an idle 16-vCPU server it transcribes about ten times faster than real time: a one-minute dictation comes back in about 8 seconds with editing. Recordings up to about four minutes fit in bb's 70-second wait (measured on the author's server: 72 s of speech in 7 s, 200 s in 28 s, 240 s in 49 s, 300 s in 61 s, editing included); a longer one fails and bb keeps it with Retry and Download buttons, so pick another service for long dictation. The recognizer gets neither the lexicon nor the composer text, because on the author's recordings both made it worse (hotwords raised the word error rate from 16% to 38%); the editor restores your terms.
+
+### Gemini through the Antigravity CLI
+
+The `x-gemini` service sends each part to Gemini through the [Antigravity](https://antigravity.google) CLI, `agy-pool` when it is installed and `agy` otherwise, under your own sign-in. The prompt treats the recording as data and passes the lexicon terms as a glossary. Starting the CLI takes about 25 seconds whatever the length, so parts run four at a time: a one-minute dictation takes about 22 seconds and a five-minute one about 63, close to bb's limit. Choose it explicitly for quality without OpenRouter credit:
+
+```sh
+bb settings ai-services set voice x-gemini --plugin dictation
+```
 
 ### Automatic selection
 
-bb's Automatic setting tries ready services in order of plugin id and then service id, and moves to the next one when a service fails. Within this plugin the order is `chatgpt`, `openrouter`, `whisper`, so local Whisper is the last resort:
+bb's Automatic setting tries ready services in order of plugin id and then service id, and moves to the next one when a service fails. Within this plugin the order is `chatgpt`, `openrouter`, `whisper`, `x-gemini`: local Whisper takes over when OpenRouter fails, and the slower Gemini service runs only if Whisper fails too, for example on a recording too long for it:
 
 ```sh
 bb settings ai-services set voice automatic
@@ -98,7 +106,7 @@ If every editor fails, returns an implausible result or runs out of time, the pl
 
 ## How a recording is processed
 
-bb waits 70 seconds for a transcript, and the plugin keeps the whole call within a 64-second budget. It decodes the recording once to 16 kHz mono and detects pauses. Recordings up to 200 seconds go to the service unchanged. Longer recordings are cut near 180 seconds, preferring a pause between 150 and 210 seconds, and each part is encoded to 32 kbps Opus. OpenRouter transcribes up to ten parts at a time, ChatGPT three and local Whisper one.
+bb waits 70 seconds for a transcript, and the plugin keeps the whole call within a 64-second budget. It decodes the recording once to 16 kHz mono and detects pauses. Recordings up to 200 seconds go to the service unchanged. Longer recordings are cut near 180 seconds, preferring a pause between 150 and 210 seconds, and each part is encoded to 32 kbps Opus. OpenRouter transcribes up to ten parts at a time, Gemini four, ChatGPT three and local Whisper one.
 
 The composer text goes to the first part as a hint, limited to its last 500 characters, and the lexicon terms go to every part. If any part fails after its retry, the whole call fails, and bb keeps the recording with Retry and Download buttons. Cancelling stops ffmpeg and the requests and deletes the temporary files. The plugin logs stage timings and never logs transcripts or credentials.
 
