@@ -25,8 +25,8 @@ import { createWhisperEngine } from "./src/whisper.js";
 const DISPLAY_NAMES = {
   openrouter: "OpenRouter dictation",
   chatgpt: "ChatGPT subscription dictation",
+  "v-gemini": "Gemini dictation (Antigravity CLI)",
   whisper: "Local Whisper dictation",
-  "x-gemini": "Gemini dictation (Antigravity CLI)",
 };
 
 function formatPreview(text: string, maxChars = 120): string {
@@ -108,12 +108,12 @@ export default function plugin(bb: BbPluginApi) {
     whisper: createWhisperEngine(
       async () => (await settings.get()).whisperLanguage,
     ),
-    "x-gemini": createGeminiEngine(),
+    "v-gemini": createGeminiEngine(),
   };
-  // bb's Automatic tries ready services in id order: `whisper` comes after
-  // `openrouter` as the fallback that needs no account, and `x-gemini`, about
-  // five times slower than local Whisper, comes last.
-  for (const id of ["openrouter", "chatgpt", "whisper", "x-gemini"] as const) {
+  // bb's Automatic tries ready services in id order, so the ids set the
+  // order: `chatgpt`, `openrouter`, then `v-gemini` ahead of local `whisper`,
+  // which stays the fallback that needs neither an account nor a network.
+  for (const id of ["openrouter", "chatgpt", "v-gemini", "whisper"] as const) {
     const engine = ENGINES[id];
     bb.experimental_aiServices.register({
       id,
@@ -224,7 +224,7 @@ export default function plugin(bb: BbPluginApi) {
             },
             service: {
               type: "enum",
-              values: ["openrouter", "chatgpt", "whisper", "x-gemini"],
+              values: ["openrouter", "chatgpt", "v-gemini", "whisper"],
               description: "Filter by transcription service",
             },
             failed: {
