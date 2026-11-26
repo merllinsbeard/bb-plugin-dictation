@@ -1,7 +1,8 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import plugin from "../server.js";
-it("offers the two voice services and keeps the API key as the only secret setting", async () => {
+it("offers three voice services and keeps the API key as the only secret setting", async () => {
+  vi.stubGlobal("fetch", async () => Response.json({ data: { limit_remaining: null } }));
   const { bb, harness } = createFakePluginHost({
     pluginId: "dictation",
     experimental_hostEntry: false,
@@ -22,6 +23,11 @@ it("offers the two voice services and keeps the API key as the only secret setti
       displayName: "ChatGPT subscription dictation",
       complete: undefined,
     },
+    {
+      id: "whisper",
+      displayName: "Local Whisper dictation",
+      complete: undefined,
+    },
   ]);
   const service = harness.registrations.aiServiceRegistrations[0];
   expect(await service.status!()).toEqual({
@@ -34,6 +40,7 @@ it("offers the two voice services and keeps the API key as the only secret setti
     "openrouterApiKey",
     "editTranscripts",
     "editModel",
+    "whisperLanguage",
     "lexicon",
     "editInstructions",
     "saveHistory",
@@ -45,4 +52,5 @@ it("offers the two voice services and keeps the API key as the only secret setti
       .map(([key]) => key),
   ).toEqual(["openrouterApiKey"]);
   await harness.dispose();
+  vi.unstubAllGlobals();
 });

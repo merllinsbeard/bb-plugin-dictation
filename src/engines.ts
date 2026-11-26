@@ -24,10 +24,45 @@ const ACCOUNT_MESSAGES: Record<number, string> = {
   402: "OpenRouter balance is too low for audio. Top up the account; dictation retries in a few minutes.",
 };
 
+// OpenRouter refuses audio below $0.50. A regular key can read its own spending
+// limit but not the account balance, so this check catches an exhausted key
+// limit before a recording is sent; a low account balance still shows up as the
+// first HTTP 402, which then blocks the service for ACCOUNT_BLOCK_MS.
+export const AUDIO_MIN_USD = 0.5;
+export const KEY_CHECK_MS = 60 * 1000;
+const KEY_LIMIT_MESSAGE =
+  "The OpenRouter key has less than $0.50 left of its spending limit, which audio requires. Raise the limit in OpenRouter's key settings.";
+
+async function keyLimitRemaining(key: string): Promise<number | null> {
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/key", {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) return null;
+    const value: unknown = await response.json();
+    const remaining =
+      typeof value === "object" &&
+      value !== null &&
+      "data" in value &&
+      typeof value.data === "object" &&
+      value.data !== null &&
+      "limit_remaining" in value.data
+        ? value.data.limit_remaining
+        : null;
+    return typeof remaining === "number" ? remaining : null;
+  } catch {
+    return null;
+  }
+}
+
 export function createEngines(
   getKey: () => Promise<string | undefined>,
 ): Record<"openrouter" | "chatgpt", Engine> {
   let accountBlock: { key: string; until: number; message: string } | undefined;
+  let keyCheck:
+    | { key: string; until: number; result: Promise<number | null> }
+    | undefined;
   const ENGINES: Record<"openrouter" | "chatgpt", Engine> = {
     openrouter: {
       concurrency: 10,
@@ -43,6 +78,15 @@ export function createEngines(
           performance.now() < accountBlock.until
         )
           return { ready: false, message: accountBlock.message };
+        if (keyCheck?.key !== key || performance.now() >= keyCheck.until)
+          keyCheck = {
+            key,
+            until: performance.now() + KEY_CHECK_MS,
+            result: keyLimitRemaining(key),
+          };
+        const remaining = await keyCheck.result;
+        if (remaining !== null && remaining < AUDIO_MIN_USD)
+          return { ready: false, message: KEY_LIMIT_MESSAGE };
         return { ready: true };
       },
       async transcribe(part, opts) {

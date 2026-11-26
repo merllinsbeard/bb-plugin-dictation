@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { transcribeCodexVoice } from "./ai/chatgpt-client.js";
-import { ACCOUNT_BLOCK_MS, createEngines, glossaryLine } from "./engines.js";
+import {
+  ACCOUNT_BLOCK_MS,
+  createEngines,
+  glossaryLine,
+  KEY_CHECK_MS,
+} from "./engines.js";
 
 vi.mock("./ai/chatgpt-client.js", () => ({ transcribeCodexVoice: vi.fn() }));
 
@@ -194,6 +199,36 @@ describe("OpenRouter engine with stub fetch test double", () => {
     vi.stubGlobal("fetch", async () => Response.json({ text: "ok" }));
     await openrouter.transcribe(part, options());
     expect(await openrouter.status()).toEqual({ ready: true });
+  });
+});
+
+describe("OpenRouter status reads the key's spending limit", () => {
+  const keyInfo = (limit_remaining: number | null) =>
+    Response.json({ data: { limit: limit_remaining === null ? null : 10, limit_remaining } });
+
+  it("reports not ready when less than $0.50 is left and asks again after a minute", async () => {
+    let remaining: number | null = 0.19;
+    const stubFetch = vi.fn<typeof fetch>(async () => keyInfo(remaining));
+    vi.stubGlobal("fetch", stubFetch);
+    const openrouter = engine();
+    expect(await openrouter.status()).toMatchObject({ ready: false });
+    expect((await openrouter.status() as { message: string }).message).toContain("spending limit");
+    expect(stubFetch).toHaveBeenCalledOnce();
+    expect(stubFetch.mock.calls[0][0]).toBe("https://openrouter.ai/api/v1/key");
+    remaining = 4;
+    const now = performance.now();
+    vi.spyOn(performance, "now").mockReturnValue(now + KEY_CHECK_MS + 1);
+    expect(await openrouter.status()).toEqual({ ready: true });
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ["a key without a limit", async () => keyInfo(null)],
+    ["a failed key lookup", async () => new Response(null, { status: 500 })],
+    ["a network error", async () => { throw new TypeError("fetch failed"); }],
+  ])("stays ready for %s", async (_name, stub) => {
+    vi.stubGlobal("fetch", stub);
+    expect(await engine().status()).toEqual({ ready: true });
   });
 });
 

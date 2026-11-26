@@ -5,7 +5,12 @@ import {
   type BbPluginApi,
 } from "@get-bb/plugin-sdk";
 import { FFMPEG_MISSING, findFfmpeg } from "./src/audio.js";
-import { createEditor, DEFAULT_EDIT_MODEL } from "./src/edit.js";
+import {
+  claudeBackend,
+  createEditor,
+  DEFAULT_EDIT_MODEL,
+  openRouterBackend,
+} from "./src/edit.js";
 import { createEngines } from "./src/engines.js";
 import {
   createDictationHistory,
@@ -14,10 +19,12 @@ import {
 } from "./src/history.js";
 import { lexiconTerms } from "./src/lexicon.js";
 import { transcribe } from "./src/pipeline.js";
+import { createWhisperEngine } from "./src/whisper.js";
 
 const DISPLAY_NAMES = {
   openrouter: "OpenRouter dictation",
   chatgpt: "ChatGPT subscription dictation",
+  whisper: "Local Whisper dictation",
 };
 
 function formatPreview(text: string, maxChars = 120): string {
@@ -47,7 +54,7 @@ export default function plugin(bb: BbPluginApi) {
       type: "boolean",
       label: "Edit transcripts with a model",
       description:
-        "After transcription, an OpenRouter model fixes terms, punctuation and recognition errors. Needs the OpenRouter API key, also with the ChatGPT service. If editing fails or runs out of time, the raw transcript is inserted.",
+        "After transcription, a model fixes terms, punctuation and recognition errors: the OpenRouter editing model when the API key is set, then Claude Haiku through the Claude Code CLI when OpenRouter fails or has no key. If both fail or run out of time, the raw transcript is inserted.",
       default: true,
     },
     editModel: {
@@ -55,6 +62,13 @@ export default function plugin(bb: BbPluginApi) {
       label: "Editing model",
       description: "OpenRouter model ID used for editing.",
       default: DEFAULT_EDIT_MODEL,
+    },
+    whisperLanguage: {
+      type: "string",
+      label: "Local Whisper language",
+      description:
+        "Language code for the local Whisper service, for example `ru` or `en`. Leave empty to detect it from each recording.",
+      default: "",
     },
     lexicon: {
       type: "string",
@@ -87,10 +101,15 @@ export default function plugin(bb: BbPluginApi) {
     return db;
   });
 
-  const ENGINES = createEngines(
-    async () => (await settings.get()).openrouterApiKey,
-  );
-  for (const id of ["openrouter", "chatgpt"] as const) {
+  const ENGINES = {
+    ...createEngines(async () => (await settings.get()).openrouterApiKey),
+    whisper: createWhisperEngine(
+      async () => (await settings.get()).whisperLanguage,
+    ),
+  };
+  // bb's Automatic tries services in id order, so `whisper` comes after
+  // `openrouter` and serves as the fallback that needs no account.
+  for (const id of ["openrouter", "chatgpt", "whisper"] as const) {
     const engine = ENGINES[id];
     bb.experimental_aiServices.register({
       id,
@@ -104,18 +123,16 @@ export default function plugin(bb: BbPluginApi) {
         const current = await settings.get();
         const key = current.openrouterApiKey?.trim();
         const model = current.editModel.trim() || DEFAULT_EDIT_MODEL;
-        const edit =
-          current.editTranscripts && key
-            ? createEditor(
-                {
-                  key,
-                  model,
-                  lexicon: current.lexicon,
-                  instructions: current.editInstructions,
-                },
-                bb.log,
-              )
-            : undefined;
+        const edit = current.editTranscripts
+          ? createEditor(
+              {
+                lexicon: current.lexicon,
+                instructions: current.editInstructions,
+              },
+              [...(key ? [openRouterBackend(key, model)] : []), claudeBackend()],
+              bb.log,
+            )
+          : undefined;
         let savedId: number | undefined;
         const hooks = current.saveHistory
           ? {
@@ -135,12 +152,16 @@ export default function plugin(bb: BbPluginApi) {
                   rawText: info.rawText,
                 });
               },
-              onEdited(info: { editedText: string; elapsedMs: number }) {
+              onEdited(info: {
+                editedText: string;
+                editModel: string;
+                elapsedMs: number;
+              }) {
                 if (savedId === undefined) return;
                 history.updateEdited({
                   id: savedId,
                   editedText: info.editedText,
-                  editModel: model,
+                  editModel: info.editModel,
                   elapsedMs: info.elapsedMs,
                 });
               },
@@ -199,7 +220,7 @@ export default function plugin(bb: BbPluginApi) {
             },
             service: {
               type: "enum",
-              values: ["openrouter", "chatgpt"],
+              values: ["openrouter", "chatgpt", "whisper"],
               description: "Filter by transcription service",
             },
             failed: {

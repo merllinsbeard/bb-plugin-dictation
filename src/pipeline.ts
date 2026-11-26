@@ -61,7 +61,11 @@ export interface TranscribeHooks {
     parts: number;
     elapsedMs: number;
   }) => void;
-  onEdited?: (info: { editedText: string; elapsedMs: number }) => void;
+  onEdited?: (info: {
+    editedText: string;
+    editModel: string;
+    elapsedMs: number;
+  }) => void;
 }
 
 export async function transcribe(
@@ -191,7 +195,7 @@ export async function transcribe(
     const editStart = performance.now();
     // Editing gets whatever transcription left of the budget and falls back
     // to the raw text, so a slow model never costs the user the transcript.
-    const edited = await edit(raw, {
+    const { text: edited, model: editModel } = await edit(raw, {
       signal: opts.signal,
       deadline: deadline - 1000,
     });
@@ -200,6 +204,7 @@ export async function transcribe(
       try {
         hooks.onEdited({
           editedText: edited,
+          editModel,
           elapsedMs: performance.now() - start,
         });
       } catch (error) {

@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { tmpdir } from "node:os";
 import type { Logger } from "./types.js";
 
 export const DEFAULT_EDIT_MODEL = "openai/gpt-6.1-terra";
@@ -17,15 +19,19 @@ Write product names and technical terms in their standard spelling, in Latin scr
 Split long dictation into paragraphs at changes of topic, separated by a blank line. Do not add headings, lists or Markdown unless the speaker dictates them.`;
 
 export type EditConfig = {
-  key: string;
-  model: string;
   lexicon: string;
   instructions: string;
 };
 export type Editor = (
   text: string,
   opts: { signal: AbortSignal; deadline: number },
-) => Promise<string>;
+) => Promise<{ text: string; model: string }>;
+// One way to run the edit prompt. The editor tries backends in order for
+// each chunk and keeps the first plausible result.
+export type EditBackend = {
+  name: string;
+  edit(system: string, chunk: string, signal: AbortSignal): Promise<string>;
+};
 type Reasoning = { enabled: false } | { effort: "minimal" };
 
 // Some models refuse to run without reasoning; remember them so later
@@ -60,8 +66,16 @@ export function splitForEditing(text: string, limit = CHUNK_CHARS): string[] {
 
 class EditRejected extends Error {}
 
+function unwrap(content: string): string {
+  return content
+    .replace(/^\s*<transcript>\s*/, "")
+    .replace(/\s*<\/transcript>\s*$/, "")
+    .trim();
+}
+
 async function request(
-  config: EditConfig,
+  key: string,
+  model: string,
   system: string,
   chunk: string,
   reasoning: Reasoning,
@@ -72,11 +86,11 @@ async function request(
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${config.key}`,
+        Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: config.model,
+        model,
         temperature: 0,
         reasoning,
         provider: { sort: "throughput" },
@@ -105,10 +119,86 @@ async function request(
     value as { choices?: Array<{ message?: { content?: unknown } }> }
   )?.choices?.[0]?.message?.content;
   if (typeof content !== "string") throw new Error("response had no text");
-  return content
-    .replace(/^\s*<transcript>\s*/, "")
-    .replace(/\s*<\/transcript>\s*$/, "")
-    .trim();
+  return unwrap(content);
+}
+
+export function openRouterBackend(key: string, model: string): EditBackend {
+  return {
+    name: model,
+    async edit(system, chunk, signal) {
+      for (;;) {
+        const reasoning: Reasoning = reasoningRequired.has(model)
+          ? { effort: "minimal" }
+          : { enabled: false };
+        try {
+          return await request(key, model, system, chunk, reasoning, signal);
+        } catch (error) {
+          if (error instanceof EditRejected && !reasoningRequired.has(model)) {
+            reasoningRequired.add(model);
+            continue;
+          }
+          throw error;
+        }
+      }
+    },
+  };
+}
+
+// Claude Code's own CLI, signed in with the user's subscription: the plugin
+// never reads its credentials. The flags keep the run free of tools, MCP
+// servers, project settings and saved sessions.
+export const CLAUDE_EDIT_MODEL = "claude-code/haiku";
+export function claudeBackend(command = "claude"): EditBackend {
+  return {
+    name: CLAUDE_EDIT_MODEL,
+    edit(system, chunk, signal) {
+      return new Promise((resolve, reject) => {
+        const child = spawn(
+          command,
+          [
+            "-p",
+            "--safe-mode",
+            "--model",
+            "haiku",
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            "--mcp-config",
+            '{"mcpServers":{}}',
+            "--tools",
+            "",
+            "--disable-slash-commands",
+            "--no-session-persistence",
+            "--system-prompt",
+            system,
+          ],
+          { cwd: tmpdir(), signal, stdio: ["pipe", "pipe", "pipe"] },
+        );
+        let stdout = "";
+        let stderr = "";
+        child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+        child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+          stderr = (stderr + chunk).slice(-2000);
+        });
+        child.stdin.on("error", () => {});
+        child.on("error", (error) =>
+          reject(
+            (error as NodeJS.ErrnoException).code === "ENOENT"
+              ? new Error("Claude Code is not installed")
+              : error,
+          ),
+        );
+        child.on("close", (code) => {
+          if (code === 0) resolve(unwrap(stdout));
+          else {
+            const detail = stderr.trim().split("\n").at(-1)?.slice(0, 200);
+            reject(new Error(`claude exited with code ${code}${detail ? `: ${detail}` : ""}`));
+          }
+        });
+        child.stdin.end(`<transcript>\n${chunk}\n</transcript>`);
+      });
+    },
+  };
 }
 
 function plausible(raw: string, edited: string): boolean {
@@ -118,62 +208,64 @@ function plausible(raw: string, edited: string): boolean {
   return ratio >= 0.4 && ratio <= 1.6;
 }
 
-export function createEditor(config: EditConfig, log: Logger): Editor {
+function reason(error: unknown): string {
+  return error instanceof Error && error.name === "TimeoutError"
+    ? "timed out"
+    : error instanceof Error
+      ? error.message
+      : String(error);
+}
+
+export function createEditor(
+  config: EditConfig,
+  backends: readonly EditBackend[],
+  log: Logger,
+): Editor {
   const system = systemPrompt(config.lexicon, config.instructions);
   async function editChunk(
     chunk: string,
     signal: AbortSignal,
     deadline: number,
-  ): Promise<string> {
-    for (;;) {
+  ): Promise<{ text: string; model: string } | undefined> {
+    for (const backend of backends) {
       const remaining = deadline - performance.now();
-      if (remaining < MIN_REQUEST_MS) throw new Error("no time left");
-      const reasoning: Reasoning = reasoningRequired.has(config.model)
-        ? { effort: "minimal" }
-        : { enabled: false };
+      if (remaining < MIN_REQUEST_MS) {
+        log.warn(`No time left to edit with ${backend.name}`);
+        return undefined;
+      }
       try {
-        const edited = await request(
-          config,
+        const edited = await backend.edit(
           system,
           chunk,
-          reasoning,
           AbortSignal.any([signal, AbortSignal.timeout(Math.floor(remaining))]),
         );
         if (!plausible(chunk, edited))
           throw new Error(
             `implausible result (${edited.length} of ${chunk.length} characters)`,
           );
-        return edited;
+        return { text: edited, model: backend.name };
       } catch (error) {
-        if (error instanceof EditRejected && !reasoningRequired.has(config.model)) {
-          reasoningRequired.add(config.model);
-          continue;
-        }
-        throw error;
+        if (signal.aborted) throw signal.reason;
+        log.warn(`Editing with ${backend.name} failed (${reason(error)})`);
       }
     }
+    return undefined;
   }
   return async (text, { signal, deadline }) => {
     const chunks = splitForEditing(text);
-    const edited = await Promise.all(
+    const results = await Promise.all(
       chunks.map(async (chunk, index) => {
-        try {
-          return await editChunk(chunk, signal, deadline);
-        } catch (error) {
-          if (signal.aborted) throw signal.reason;
-          const reason =
-            error instanceof Error && error.name === "TimeoutError"
-              ? "timed out"
-              : error instanceof Error
-                ? error.message
-                : String(error);
+        const result = await editChunk(chunk, signal, deadline);
+        if (!result)
           log.warn(
-            `Editing part ${index + 1} of ${chunks.length} with ${config.model} failed (${reason}); inserting the raw transcript`,
+            `Editing part ${index + 1} of ${chunks.length} failed; inserting the raw transcript`,
           );
-          return chunk;
-        }
+        return result ?? { text: chunk, model: "raw" };
       }),
     );
-    return edited.join(" ");
+    return {
+      text: results.map((result) => result.text).join(" "),
+      model: [...new Set(results.map((result) => result.model))].join(", "),
+    };
   };
 }
