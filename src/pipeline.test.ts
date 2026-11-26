@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { runFfmpeg } from "./audio.js";
-import { createEditor } from "./edit.js";
+import { createEditor, openRouterBackend } from "./edit.js";
 import { attemptTimeoutMs, transcribe } from "./pipeline.js";
 import type { AudioPart, Engine } from "./types.js";
 let directory: string;
@@ -103,7 +103,7 @@ it("edits the joined transcript within the 64-second budget", async () => {
     log,
     async (text, { deadline }) => {
       received = { text, deadline };
-      return text.toUpperCase();
+      return { text: text.toUpperCase(), model: "stub" };
     },
   );
   expect(result).toBe("PART-0 PART-1 PART-2");
@@ -126,7 +126,11 @@ it("returns the raw transcript without calling the editor model when transcripti
         return "сырой текст";
       }),
       log,
-      createEditor({ key: "k", model: "vendor/editor", lexicon: "", instructions: "" }, log),
+      createEditor(
+        { lexicon: "", instructions: "" },
+        [openRouterBackend("k", "vendor/editor")],
+        log,
+      ),
     );
     expect(result).toBe("сырой текст");
     expect(fetchStub).not.toHaveBeenCalled();
